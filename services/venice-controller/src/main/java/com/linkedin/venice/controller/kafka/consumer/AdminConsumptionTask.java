@@ -145,6 +145,9 @@ public class AdminConsumptionTask implements Runnable, Closeable {
   private final boolean remoteConsumptionEnabled;
 
   private boolean isSubscribed;
+
+  private long lastAdminTopicLogTime = 0;
+
   private final PubSubConsumerAdapter consumer;
   private volatile long offsetToSkip = UNASSIGNED_VALUE;
   private volatile long offsetToSkipDIV = UNASSIGNED_VALUE;
@@ -308,14 +311,48 @@ public class AdminConsumptionTask implements Runnable, Closeable {
   }
 
   @Override
-  public synchronized void close() throws IOException {
-    isRunning.getAndSet(false);
+  public void close() throws IOException {
+    isRunning.set(false);
+  }
+
+  private boolean createAdminTopicByParentController() {
+    String logMessageFormat = "Admin topic: {} hasn't been created yet. {}";
+    if (!isParentController) {
+      // To reduce log bloat, only log once per minute
+      if (System.currentTimeMillis() - lastAdminTopicLogTime > 60 * Time.MS_PER_SECOND) {
+        LOGGER
+            .info(logMessageFormat, topic, "Since this is a child controller, it will not be created by this process.");
+        lastAdminTopicLogTime = System.currentTimeMillis();
+      }
+      return false;
+    }
+    LOGGER.info(logMessageFormat, topic, "Since this is the parent controller, it will be created now.");
+    admin.getTopicManager().createTopic(pubSubTopic, 1, adminTopicReplicationFactor, true, false, minInSyncReplicas);
+    LOGGER.info("Admin topic {} is created.", topic);
+    return true;
+  }
+
+  private void pollAdminTopicRecordsIntoList() {
+    Iterator<PubSubMessage<KafkaKey, KafkaMessageEnvelope, Long>> recordsIterator;
+    Map<PubSubTopicPartition, List<PubSubMessage<KafkaKey, KafkaMessageEnvelope, Long>>> messages =
+        consumer.poll(READ_CYCLE_DELAY_MS);
+    if (messages == null || messages.isEmpty()) {
+      LOGGER.debug("Received null or no messages");
+    } else {
+      int polledMessageCount = messages.values().stream().mapToInt(List::size).sum();
+      LOGGER.info("Consumed {} admin messages from kafka. Will queue them up for processing", polledMessageCount);
+      recordsIterator = Utils.iterateOnMapOfLists(messages);
+      while (recordsIterator.hasNext()) {
+        PubSubMessage<KafkaKey, KafkaMessageEnvelope, Long> newRecord = recordsIterator.next();
+        lastConsumedOffset = newRecord.getOffset();
+        undelegatedRecords.add(newRecord);
+      }
+    }
   }
 
   @Override
   public void run() {
     LOGGER.info("Running {}", this.getClass().getSimpleName());
-    long lastLogTime = 0;
     while (isRunning.get()) {
       try {
         Utils.sleep(READ_CYCLE_DELAY_MS);
@@ -327,43 +364,15 @@ public class AdminConsumptionTask implements Runnable, Closeable {
           if (whetherTopicExists(pubSubTopic)) {
             // Topic was not created by this process, so we make sure it has the right retention.
             makeSureAdminTopicUsingInfiniteRetentionPolicy(pubSubTopic);
-          } else {
-            String logMessageFormat = "Admin topic: {} hasn't been created yet. {}";
-            if (!isParentController) {
-              // To reduce log bloat, only log once per minute
-              if (System.currentTimeMillis() - lastLogTime > 60 * Time.MS_PER_SECOND) {
-                LOGGER.info(
-                    logMessageFormat,
-                    topic,
-                    "Since this is a child controller, it will not be created by this process.");
-                lastLogTime = System.currentTimeMillis();
-              }
-              continue;
-            }
-            LOGGER.info(logMessageFormat, topic, "Since this is the parent controller, it will be created now.");
-            admin.getTopicManager()
-                .createTopic(pubSubTopic, 1, adminTopicReplicationFactor, true, false, minInSyncReplicas);
-            LOGGER.info("Admin topic {} is created.", topic);
+          } else if (!createAdminTopicByParentController()) {
+            continue;
           }
           subscribe();
         }
-        Iterator<PubSubMessage<KafkaKey, KafkaMessageEnvelope, Long>> recordsIterator;
+
         // Only poll the kafka channel if there are no more undelegated records due to exceptions.
         if (undelegatedRecords.isEmpty()) {
-          Map<PubSubTopicPartition, List<PubSubMessage<KafkaKey, KafkaMessageEnvelope, Long>>> messages =
-              consumer.poll(READ_CYCLE_DELAY_MS);
-          if (messages == null || messages.isEmpty()) {
-            LOGGER.debug("Received null or no messages");
-          } else {
-            int polledMessageCount = messages.values().stream().mapToInt(List::size).sum();
-            LOGGER.info("Consumed {} admin messages from kafka. Will queue them up for processing", polledMessageCount);
-            recordsIterator = Utils.iterateOnMapOfLists(messages);
-            while (recordsIterator.hasNext()) {
-              PubSubMessage<KafkaKey, KafkaMessageEnvelope, Long> newRecord = recordsIterator.next();
-              lastConsumedOffset = newRecord.getOffset();
-              undelegatedRecords.add(newRecord);
-            }
-          }
+          pollAdminTopicRecordsIntoList();
         } else {
           LOGGER.info(
               "There are {} admin messages in the undelegated message queue. "
@@ -375,7 +384,7 @@ public class AdminConsumptionTask implements Runnable, Closeable {
           try {
             long executionId = delegateMessage(undelegatedRecords.peek());
             if (executionId == lastDelegatedExecutionId) {
-              updateLastOffset(undelegatedRecords.peek().getOffset());
+              updateLastOffsetIfLarger(undelegatedRecords.peek().getOffset());
             }
             undelegatedRecords.remove();
           } catch (DataValidationException dve) {
@@ -429,7 +438,6 @@ public class AdminConsumptionTask implements Runnable, Closeable {
        * For the first poll after subscription, Controller will try to consume one message older than {@link #lastPersistedOffset}
        * to initialize the {@link #producerInfo}, which will be used to decide whether an execution id gap is a false alarm or not
        * in {@link #checkAndValidateMessage}.
-       *
        */
       lastOffset = lastPersistedOffset - 1;
       lastDelegatedExecutionId = lastPersistedExecutionId;
@@ -643,6 +651,39 @@ public class AdminConsumptionTask implements Runnable, Closeable {
     LOGGER.info("Admin topic: {} has been updated to use infinite retention policy", topic);
   }
 
+  private AdminOperation retrieveAdminOperationFromRecord(PubSubMessage<KafkaKey, KafkaMessageEnvelope, Long> record) {
+    KafkaKey kafkaKey = record.getKey();
+    KafkaMessageEnvelope kafkaValue = record.getValue();
+    if (kafkaKey.isControlMessage()) {
+      LOGGER.debug("Received control message: {}", kafkaValue);
+      return null;
+    }
+    // check message type
+    MessageType messageType = MessageType.valueOf(kafkaValue);
+    if (MessageType.PUT != messageType) {
+      throw new VeniceException("Received unexpected message type: " + messageType);
+    }
+    Put put = (Put) kafkaValue.payloadUnion;
+    return deserializer.deserialize(put.putValue, put.schemaId);
+  }
+
+  private void addAdminOperationForOneStore(
+      String storeName,
+      AdminOperation adminOp,
+      long offset,
+      long producerTimestamp,
+      long brokerTimestamp) {
+    Queue<AdminOperationWrapper> operationQueue =
+        storeAdminOperationsMapWithOffset.computeIfAbsent(storeName, n -> new LinkedList<>());
+    AdminOperationWrapper adminOperationWrapper =
+        new AdminOperationWrapper(adminOp, offset, producerTimestamp, brokerTimestamp, System.currentTimeMillis());
+    operationQueue.add(adminOperationWrapper);
+    stats.recordAdminMessageMMLatency(
+        Math.max(0, adminOperationWrapper.getLocalBrokerTimestamp() - adminOperationWrapper.getProducerTimestamp()));
+    stats.recordAdminMessageDelegateLatency(
+        Math.max(0, adminOperationWrapper.getDelegateTimestamp() - adminOperationWrapper.getLocalBrokerTimestamp()));
+  }
+
   /**
    * This method groups {@link AdminOperation}s by their corresponding store.
    * @param record The {@link PubSubMessage} containing the {@link AdminOperation}.
@@ -656,19 +697,12 @@ public class AdminConsumptionTask implements Runnable, Closeable {
       // what's the right execution id and producer info to set moving forward.
       return lastDelegatedExecutionId;
     }
-    KafkaKey kafkaKey = record.getKey();
-    KafkaMessageEnvelope kafkaValue = record.getValue();
-    if (kafkaKey.isControlMessage()) {
-      LOGGER.debug("Received control message: {}", kafkaValue);
+
+    AdminOperation adminOperation = retrieveAdminOperationFromRecord(record);
+    if (adminOperation == null) {
       return UNASSIGNED_VALUE;
     }
-    // check message type
-    MessageType messageType = MessageType.valueOf(kafkaValue);
-    if (MessageType.PUT != messageType) {
-      throw new VeniceException("Received unexpected message type: " + messageType);
-    }
-    Put put = (Put) kafkaValue.payloadUnion;
-    AdminOperation adminOperation = deserializer.deserialize(put.putValue, put.schemaId);
+
     long executionId = adminOperation.executionId;
     try {
       checkAndValidateMessage(adminOperation, record);
@@ -688,47 +722,19 @@ public class AdminConsumptionTask implements Runnable, Closeable {
     }
 
     AdminMessageType adminMessageType = AdminMessageType.valueOf(adminOperation);
+    long producerTimestamp = record.getValue().producerMetadata.messageTimestamp;
+    long brokerTimestamp = record.getPubSubMessageTime();
+
+    String storeName;
     if (adminMessageType.isBatchUpdate()) {
-      long producerTimestamp = kafkaValue.producerMetadata.messageTimestamp;
-      long brokerTimestamp = record.getPubSubMessageTime();
       List<Store> stores = admin.getAllStores(clusterName);
       for (Store store: stores) {
-        String storeName = store.getName();
-        Queue<AdminOperationWrapper> operationQueue =
-            storeAdminOperationsMapWithOffset.computeIfAbsent(storeName, n -> new LinkedList<>());
-        AdminOperationWrapper adminOperationWrapper = new AdminOperationWrapper(
-            adminOperation,
-            record.getOffset(),
-            producerTimestamp,
-            brokerTimestamp,
-            System.currentTimeMillis());
-        operationQueue.add(adminOperationWrapper);
-        stats.recordAdminMessageMMLatency(
-            Math.max(
-                0,
-                adminOperationWrapper.getLocalBrokerTimestamp() - adminOperationWrapper.getProducerTimestamp()));
-        stats.recordAdminMessageDelegateLatency(
-            Math.max(
-                0,
-                adminOperationWrapper.getDelegateTimestamp() - adminOperationWrapper.getLocalBrokerTimestamp()));
+        storeName = store.getName();
+        addAdminOperationForOneStore(storeName, adminOperation, record.getOffset(), producerTimestamp, brokerTimestamp);
       }
     } else {
-      long producerTimestamp = kafkaValue.producerMetadata.messageTimestamp;
-      long brokerTimestamp = record.getPubSubMessageTime();
-      AdminOperationWrapper adminOperationWrapper = new AdminOperationWrapper(
-          adminOperation,
-          record.getOffset(),
-          producerTimestamp,
-          brokerTimestamp,
-          System.currentTimeMillis());
-      stats.recordAdminMessageMMLatency(
-          Math.max(0, adminOperationWrapper.getLocalBrokerTimestamp() - adminOperationWrapper.getProducerTimestamp()));
-      stats.recordAdminMessageDelegateLatency(
-          Math.max(0, adminOperationWrapper.getDelegateTimestamp() - adminOperationWrapper.getLocalBrokerTimestamp()));
-      String storeName = extractStoreName(adminOperation);
-      storeAdminOperationsMapWithOffset.putIfAbsent(storeName, new LinkedList<>());
-      storeAdminOperationsMapWithOffset.get(storeName).add(adminOperationWrapper);
-
+      storeName = extractStoreName(adminOperation);
+      addAdminOperationForOneStore(storeName, adminOperation, record.getOffset(), producerTimestamp, brokerTimestamp);
     }
     return executionId;
   }
@@ -742,39 +748,39 @@ public class AdminConsumptionTask implements Runnable, Closeable {
       updateProducerInfo(record.getValue().producerMetadata);
       return;
     }
+
     if (incomingExecutionId == lastDelegatedExecutionId + 1) {
       // Expected behavior
       lastDelegatedExecutionId++;
       updateProducerInfo(record.getValue().producerMetadata);
-    } else if (incomingExecutionId <= lastDelegatedExecutionId) {
+      return;
+    }
+
+    if (incomingExecutionId <= lastDelegatedExecutionId) {
       updateProducerInfo(record.getValue().producerMetadata);
       throw new DuplicateDataException(
           "Skipping message with execution id: " + incomingExecutionId + " because last delegated execution id was: "
               + lastDelegatedExecutionId);
-    } else {
-      // Cross-reference with producerInfo to see if the missing data is false positive.
-      boolean throwException = true;
-      String exceptionString = "Last delegated execution id was: " + lastDelegatedExecutionId
-          + " ,but incoming execution id is: " + incomingExecutionId;
-      String producerInfoString =
-          " Previous producer info: " + (producerInfo == null ? "null" : producerInfo.toString())
-              + " Incoming message producer info: " + record.getValue().producerMetadata;
-      if (producerInfo != null) {
-        throwException = !producerInfo.isIncomingMessageValid(record.getValue().producerMetadata);
-      }
-      if (throwException) {
-        if (producerInfo != null) {
-          exceptionString += producerInfoString;
-        } else {
-          exceptionString += " Cannot cross-reference with previous producer info because it's not available yet";
-        }
-        throw new MissingDataException(exceptionString);
-      } else {
-        LOGGER.info("Ignoring {} Cross-reference with producerInfo passed. {}", exceptionString, producerInfoString);
-        updateProducerInfo(record.getValue().producerMetadata);
-        lastDelegatedExecutionId = incomingExecutionId;
-      }
     }
+
+    // Cross-reference with producerInfo to see if the missing data is false positive.
+    String exceptionString = "Last delegated execution id was: " + lastDelegatedExecutionId
+        + " ,but incoming execution id is: " + incomingExecutionId;
+    String producerInfoString = " Previous producer info: " + (producerInfo == null ? "null" : producerInfo.toString())
+        + " Incoming message producer info: " + record.getValue().producerMetadata;
+
+    boolean throwException =
+        producerInfo != null ? !producerInfo.isIncomingMessageValid(record.getValue().producerMetadata) : true;
+    if (throwException) {
+      exceptionString += producerInfo != null
+          ? producerInfoString
+          : " Cannot cross-reference with previous producer info because it's not available yet";
+      throw new MissingDataException(exceptionString);
+    }
+
+    LOGGER.info("Ignoring {} Cross-reference with producerInfo passed. {}", exceptionString, producerInfoString);
+    updateProducerInfo(record.getValue().producerMetadata);
+    lastDelegatedExecutionId = incomingExecutionId;
   }
 
   private void updateProducerInfo(ProducerMetadata producerMetadata) {
@@ -831,7 +837,7 @@ public class AdminConsumptionTask implements Runnable, Closeable {
     return storeName;
   }
 
-  private void updateLastOffset(long offset) {
+  private void updateLastOffsetIfLarger(long offset) {
     if (offset > lastOffset) {
       lastOffset = offset;
     }
@@ -876,25 +882,23 @@ public class AdminConsumptionTask implements Runnable, Closeable {
   }
 
   private boolean checkOffsetToSkip(long offset, boolean reset) {
-    boolean skip = false;
     if (offset == offsetToSkip) {
       LOGGER.warn("Skipping admin message with offset {} as instructed", offset);
       if (reset) {
         resetOffsetToSkip();
       }
-      skip = true;
+      return true;
     }
-    return skip;
+    return false;
   }
 
   private boolean checkOffsetToSkipDIV(long offset) {
-    boolean skip = false;
     if (offset == offsetToSkipDIV) {
       LOGGER.warn("Skipping DIV for admin message with offset {} as instructed", offset);
       offsetToSkipDIV = UNASSIGNED_VALUE;
-      skip = true;
+      return true;
     }
-    return skip;
+    return false;
   }
 
   Long getLastSucceededExecutionId() {
@@ -902,19 +906,11 @@ public class AdminConsumptionTask implements Runnable, Closeable {
   }
 
   Long getLastSucceededExecutionId(String storeName) {
-    if (lastSucceededExecutionIdMap != null) {
-      return lastSucceededExecutionIdMap.get(storeName);
-    } else {
-      return null;
-    }
+    return lastSucceededExecutionIdMap != null ? lastSucceededExecutionIdMap.get(storeName) : null;
   }
 
   Exception getLastExceptionForStore(String storeName) {
-    if (problematicStores.containsKey(storeName)) {
-      return problematicStores.get(storeName).exception;
-    } else {
-      return null;
-    }
+    return problematicStores.containsKey(storeName) ? problematicStores.get(storeName).exception : null;
   }
 
   long getFailingOffset() {
