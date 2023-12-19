@@ -1085,10 +1085,10 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
           kafkaClusterId,
           beforeProcessingRecordTimestampNs,
           currentTimeForMetricsMs);
+
       switch (delegateConsumerRecordResult) {
         case QUEUED_TO_DRAINER:
           long queuePutStartTimeInNS = metricsEnabled ? System.nanoTime() : 0;
-
           // blocking call
           storeBufferService
               .putConsumerRecord(record, this, null, subPartition, kafkaUrl, beforeProcessingRecordTimestampNs);
@@ -2125,7 +2125,8 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
       LeaderProducedRecordContext leaderProducedRecordContext,
       int subPartition,
       String kafkaUrl,
-      long beforeProcessingRecordTimestampNs) {
+      long beforeProcessingRecordTimestampNs,
+      boolean isLeader) {
     // The partitionConsumptionStateMap can be modified by other threads during consumption (for example when
     // unsubscribing)
     // in order to maintain thread safety, we hold onto the reference to the partitionConsumptionState and pass that
@@ -2143,7 +2144,8 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
           partitionConsumptionState,
           leaderProducedRecordContext,
           kafkaUrl,
-          beforeProcessingRecordTimestampNs);
+          beforeProcessingRecordTimestampNs,
+          isLeader);
     } catch (FatalDataValidationException e) {
       int faultyPartition = record.getTopicPartition().getPartitionNumber();
       String errorMessage;
@@ -2568,7 +2570,8 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
       ControlMessage controlMessage,
       int partition,
       long offset,
-      PartitionConsumptionState partitionConsumptionState) {
+      PartitionConsumptionState partitionConsumptionState,
+      boolean isLeader) {
     throw new VeniceException(
         ControlMessageType.TOPIC_SWITCH.name() + " control message should not be received in"
             + "Online/Offline state model. Topic " + kafkaVersionTopic + " partition " + partition);
@@ -2583,7 +2586,8 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
       ControlMessage controlMessage,
       int partition,
       long offset,
-      PartitionConsumptionState partitionConsumptionState) {
+      PartitionConsumptionState partitionConsumptionState,
+      boolean isLeader) {
     boolean checkReadyToServeAfterProcess = false;
     /**
      * If leader consumes control messages from topics other than version topic, it should produce
@@ -2600,6 +2604,11 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
           type.name(),
           partition,
           offset);
+      LOGGER.info(
+          "lelu: drainer thread: {}, leadership: {}, isLeader: {}",
+          type.name(),
+          partitionConsumptionState.getLeaderFollowerState(),
+          isLeader);
     }
     switch (type) {
       case START_OF_PUSH:
@@ -2618,14 +2627,16 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
          */
         break;
       case START_OF_INCREMENTAL_PUSH:
+        LOGGER.info("lelu: received {}", type);
         processStartOfIncrementalPush(controlMessage, partitionConsumptionState);
         break;
       case END_OF_INCREMENTAL_PUSH:
         processEndOfIncrementalPush(controlMessage, partitionConsumptionState);
         break;
       case TOPIC_SWITCH:
+        LOGGER.info("lelu: topic switch");
         checkReadyToServeAfterProcess =
-            processTopicSwitch(controlMessage, partition, offset, partitionConsumptionState);
+            processTopicSwitch(controlMessage, partition, offset, partitionConsumptionState, isLeader);
         break;
       case VERSION_SWAP:
         processVersionSwapMessage(controlMessage, partition, partitionConsumptionState);
@@ -2655,7 +2666,8 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
       PartitionConsumptionState partitionConsumptionState,
       PubSubMessage<KafkaKey, KafkaMessageEnvelope, Long> consumerRecordWrapper,
       LeaderProducedRecordContext leaderProducedRecordContext,
-      String kafkaUrl);
+      String kafkaUrl,
+      boolean isLeader);
 
   /**
    * Process the message consumed from Kafka by de-serializing it and persisting it with the storage engine.
@@ -2667,7 +2679,8 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
       PartitionConsumptionState partitionConsumptionState,
       LeaderProducedRecordContext leaderProducedRecordContext,
       String kafkaUrl,
-      long beforeProcessingRecordTimestampNs) {
+      long beforeProcessingRecordTimestampNs,
+      boolean isLeader) {
     // De-serialize payload into Venice Message format
     KafkaKey kafkaKey = consumerRecord.getKey();
     KafkaMessageEnvelope kafkaValue = consumerRecord.getValue();
@@ -2731,7 +2744,8 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
             controlMessage,
             consumerRecord.getTopicPartition().getPartitionNumber(),
             consumerRecord.getOffset(),
-            partitionConsumptionState);
+            partitionConsumptionState,
+            isLeader);
       } else {
         sizeOfPersistedData = processKafkaDataMessage(
             consumerRecord,
@@ -2793,7 +2807,8 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
           partitionConsumptionState,
           consumerRecord,
           leaderProducedRecordContext,
-          kafkaUrl);
+          kafkaUrl,
+          isLeader);
       if (checkReadyToServeAfterProcess) {
         defaultReadyToServeChecker.apply(partitionConsumptionState);
       }
@@ -3674,6 +3689,7 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
      * 3. Leader is consuming from local version topics
      */
     QUEUED_TO_DRAINER,
+
     /**
      * The consumer record is a duplicated message.
      */

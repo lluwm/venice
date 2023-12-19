@@ -48,7 +48,7 @@ public class PartitionConsumptionState {
   private boolean completionReported;
   private boolean isSubscribed;
   private boolean isDataRecoveryCompleted;
-  private LeaderFollowerStateType leaderFollowerState;
+  private volatile LeaderFollowerStateType leaderFollowerState;
 
   private CompletableFuture<Void> lastVTProduceCallFuture;
 

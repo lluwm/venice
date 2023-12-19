@@ -1049,13 +1049,14 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
       ControlMessage controlMessage,
       int partition,
       long offset,
-      PartitionConsumptionState partitionConsumptionState) {
+      PartitionConsumptionState partitionConsumptionState,
+      boolean isLeader) {
     /**
      * During batch push, all subPartitions in LEADER will consume from leader topic (either local or remote VT)
      * Once we switch into RT topic consumption, only leaderSubPartition should be acting as LEADER role.
      * Hence, before processing TopicSwitch message, we need to force downgrade other subPartitions into FOLLOWER.
      */
-    if (isLeader(partitionConsumptionState) && !amplificationFactorAdapter.isLeaderSubPartition(partition)) {
+    if (isLeader && !amplificationFactorAdapter.isLeaderSubPartition(partition)) {
       LOGGER.info("SubPartition: {} is demoted from LEADER to STANDBY.", partitionConsumptionState.getPartition());
       PubSubTopic currentLeaderTopic =
           partitionConsumptionState.getOffsetRecord().getLeaderTopic(pubSubTopicRepository);
@@ -1070,6 +1071,7 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
               partition));
       partitionConsumptionState.setConsumeRemotely(false);
       partitionConsumptionState.setLeaderFollowerState(STANDBY);
+      isLeader = false;
       consumerSubscribe(
           partitionConsumptionState.getSourceTopicPartition(versionTopic),
           partitionConsumptionState.getLatestProcessedLocalVersionTopicOffset(),
@@ -1138,7 +1140,7 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
      */
     syncTopicSwitchToIngestionMetadataService(topicSwitch, partitionConsumptionState, upstreamStartOffsetByKafkaURL);
     if (!isLeader(partitionConsumptionState)) {
-      partitionConsumptionState.getOffsetRecord().setLeaderTopic(newSourceTopic);
+      // partitionConsumptionState.getOffsetRecord().setLeaderTopic(newSourceTopic);
       return true;
     }
     return false;
@@ -1149,7 +1151,8 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
       PartitionConsumptionState partitionConsumptionState,
       PubSubMessage<KafkaKey, KafkaMessageEnvelope, Long> consumerRecord,
       LeaderProducedRecordContext leaderProducedRecordContext,
-      String kafkaUrl) {
+      String kafkaUrl,
+      boolean isLeader) {
     updateOffsetsFromConsumerRecord(
         partitionConsumptionState,
         consumerRecord,
@@ -1165,7 +1168,8 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
         (sourceKafkaUrl, upstreamTopic) -> upstreamTopic.isRealTime()
             ? partitionConsumptionState.getLatestProcessedUpstreamRTOffset(sourceKafkaUrl)
             : partitionConsumptionState.getLatestProcessedUpstreamVersionTopicOffset(),
-        () -> getUpstreamKafkaUrl(partitionConsumptionState, consumerRecord, kafkaUrl));
+        () -> getUpstreamKafkaUrl(isLeader, consumerRecord, kafkaUrl),
+        isLeader);
   }
 
   /**
@@ -1175,17 +1179,17 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
    *       a. The upstream kafka url populated by the leader in the record, or
    *       b. The local kafka address
    *
-   * @param partitionConsumptionState The current {@link PartitionConsumptionState} for the partition
+   * @param isLeader If the record is consumed by a leader.
    * @param consumerRecord The record for which the upstream Kafka url needs to be computed
    * @param recordSourceKafkaUrl The Kafka URL from where the record was consumed
    * @return The computed upstream Kafka URL for the record
    */
   private String getUpstreamKafkaUrl(
-      PartitionConsumptionState partitionConsumptionState,
+      boolean isLeader,
       PubSubMessage<KafkaKey, KafkaMessageEnvelope, Long> consumerRecord,
       String recordSourceKafkaUrl) {
     final String upstreamKafkaURL;
-    if (isLeader(partitionConsumptionState)) {
+    if (isLeader) {
       // Wherever leader consumes from is considered as "upstream"
       upstreamKafkaURL = recordSourceKafkaUrl;
     } else {

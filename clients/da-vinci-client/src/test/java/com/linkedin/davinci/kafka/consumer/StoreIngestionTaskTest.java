@@ -3408,7 +3408,7 @@ public abstract class StoreIngestionTaskTest {
     doReturn(PARTITION_FOO).when(mockPcs).getUserPartition();
     doReturn(PARTITION_FOO).when(mockPcs).getPartition();
     storeIngestionTaskUnderTest.getStatusReportAdapter().initializePartitionReportStatus(PARTITION_FOO);
-    storeIngestionTaskUnderTest.processTopicSwitch(controlMessage, PARTITION_FOO, 10, mockPcs);
+    storeIngestionTaskUnderTest.processTopicSwitch(controlMessage, PARTITION_FOO, 10, mockPcs, false);
 
     verify(mockTopicManagerRemoteKafka, isDaVinciClient ? never() : times(1))
         .getPartitionOffsetByTime(any(), anyLong());
