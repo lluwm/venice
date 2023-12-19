@@ -639,11 +639,11 @@ public class LeaderFollowerStoreIngestionTask extends StoreIngestionTask {
             break;
           }
 
+          // after the first topic switch, the leader should not execute any more topic switch.
           PubSubTopic newSourceTopic = topicSwitchWrapper.getNewSourceTopic();
           if (currentLeaderTopic.equals(newSourceTopic)) {
             break;
           }
-
           /**
            * Otherwise, execute the TopicSwitch message stored in metadata store if one of the below conditions is true:
            * 1. it has been 5 minutes since the last update in the current topic
@@ -1098,9 +1098,14 @@ public class LeaderFollowerStoreIngestionTask extends StoreIngestionTask {
    * If buffer replay is disable, all replicas will stick to version topic, no one is going to produce any message.
    */
   protected boolean shouldProduceToVersionTopic(PartitionConsumptionState partitionConsumptionState) {
-    if (!isLeader(partitionConsumptionState)) {
-      return false; // Not leader
-    }
+    return isLeader(partitionConsumptionState) && shouldLeaderProduceToVersionTopic(partitionConsumptionState);
+  }
+
+  protected boolean shouldProduceToVersionTopic(boolean isLeader, PartitionConsumptionState partitionConsumptionState) {
+    return isLeader && shouldLeaderProduceToVersionTopic(partitionConsumptionState);
+  }
+
+  private boolean shouldLeaderProduceToVersionTopic(PartitionConsumptionState partitionConsumptionState) {
     PubSubTopic leaderTopic = partitionConsumptionState.getOffsetRecord().getLeaderTopic(pubSubTopicRepository);
     return (!versionTopic.equals(leaderTopic) || partitionConsumptionState.consumeRemotely());
   }
@@ -1118,13 +1123,14 @@ public class LeaderFollowerStoreIngestionTask extends StoreIngestionTask {
       ControlMessage controlMessage,
       int partition,
       long offset,
-      PartitionConsumptionState partitionConsumptionState) {
+      PartitionConsumptionState partitionConsumptionState,
+      boolean isLeader) {
     /**
      * During batch push, all subPartitions in LEADER will consume from leader topic (either local or remote VT)
      * Once we switch into RT topic consumption, only leaderSubPartition should be acting as LEADER role.
      * Hence, before processing TopicSwitch message, we need to force downgrade other subPartitions into FOLLOWER.
      */
-    if (isLeader(partitionConsumptionState) && !amplificationFactorAdapter.isLeaderSubPartition(partition)) {
+    if (isLeader && !amplificationFactorAdapter.isLeaderSubPartition(partition)) {
       LOGGER.info("SubPartition: {} is demoted from LEADER to STANDBY.", partitionConsumptionState.getPartition());
       PubSubTopic currentLeaderTopic =
           partitionConsumptionState.getOffsetRecord().getLeaderTopic(pubSubTopicRepository);
@@ -1138,6 +1144,7 @@ public class LeaderFollowerStoreIngestionTask extends StoreIngestionTask {
               partition));
       partitionConsumptionState.setConsumeRemotely(false);
       partitionConsumptionState.setLeaderFollowerState(STANDBY);
+      isLeader = false;
       consumerSubscribe(
           partitionConsumptionState.getSourceTopicPartition(versionTopic),
           partitionConsumptionState.getLatestProcessedLocalVersionTopicOffset(),
@@ -1182,7 +1189,7 @@ public class LeaderFollowerStoreIngestionTask extends StoreIngestionTask {
         partitionConsumptionState,
         Collections.singletonMap(sourceKafkaURL, upstreamStartOffset));
 
-    if (isLeader(partitionConsumptionState)) {
+    if (isLeader) {
       /**
        * Leader shouldn't switch topic here (drainer thread), which would conflict with the ingestion thread which would
        * also access consumer.
@@ -1277,10 +1284,11 @@ public class LeaderFollowerStoreIngestionTask extends StoreIngestionTask {
       UpdateVersionTopicOffset updateVersionTopicOffsetFunction,
       UpdateUpstreamTopicOffset updateUpstreamTopicOffsetFunction,
       GetLastKnownUpstreamTopicOffset lastKnownUpstreamTopicOffsetSupplier,
-      Supplier<String> sourceKafkaUrlSupplier) {
+      Supplier<String> sourceKafkaUrlSupplier,
+      boolean isLeader) {
 
     // Only update the metadata if this replica should NOT produce to version topic.
-    if (!shouldProduceToVersionTopic(partitionConsumptionState)) {
+    if (!shouldProduceToVersionTopic(isLeader, partitionConsumptionState)) {
       PubSubTopic consumedTopic = consumerRecord.getTopicPartition().getPubSubTopic();
       if (consumedTopic.isRealTime()) {
         // Does this ever happen?
@@ -1397,7 +1405,8 @@ public class LeaderFollowerStoreIngestionTask extends StoreIngestionTask {
       PartitionConsumptionState partitionConsumptionState,
       PubSubMessage<KafkaKey, KafkaMessageEnvelope, Long> consumerRecordWrapper,
       LeaderProducedRecordContext leaderProducedRecordContext,
-      String kafkaUrl) {
+      String kafkaUrl,
+      boolean isLeader) {
     updateOffsetsFromConsumerRecord(
         partitionConsumptionState,
         consumerRecordWrapper,
@@ -1413,7 +1422,8 @@ public class LeaderFollowerStoreIngestionTask extends StoreIngestionTask {
         (sourceKafkaUrl, upstreamTopic) -> upstreamTopic.isRealTime()
             ? partitionConsumptionState.getLatestProcessedUpstreamRTOffset(sourceKafkaUrl)
             : partitionConsumptionState.getLatestProcessedUpstreamVersionTopicOffset(),
-        () -> OffsetRecord.NON_AA_REPLICATION_UPSTREAM_OFFSET_MAP_KEY);
+        () -> OffsetRecord.NON_AA_REPLICATION_UPSTREAM_OFFSET_MAP_KEY,
+        isLeader);
   }
 
   protected void checkAndHandleUpstreamOffsetRewind(
@@ -2056,7 +2066,7 @@ public class LeaderFollowerStoreIngestionTask extends StoreIngestionTask {
    * This function should be called as one of the first steps in processing pipeline for all messages consumed from any kafka topic.
    *
    * The caller of this function should only process this {@param consumerRecord} further if the return is
-   * {@link DelegateConsumerRecordResult#QUEUED_TO_DRAINER}.
+   * {@link DelegateConsumerRecordResult#QUEUED_TO_DRAINER_AS_FOLLOWER_NODE} or {@link DelegateConsumerRecordResult#QUEUED_TO_DRAINER_AS_LEADER_NODE}.
    *
    * This function assumes {@link #shouldProcessRecord(PubSubMessage, int)} has been called which happens in
    * {@link StoreIngestionTask#produceToStoreBufferServiceOrKafka(Iterable, PubSubTopicPartition, String, int)}
@@ -2096,7 +2106,8 @@ public class LeaderFollowerStoreIngestionTask extends StoreIngestionTask {
         // The partition is likely unsubscribed, will skip these messages.
         return DelegateConsumerRecordResult.SKIPPED_MESSAGE;
       }
-      produceToLocalKafka = shouldProduceToVersionTopic(partitionConsumptionState);
+      boolean isLeader = isLeader(partitionConsumptionState);
+      produceToLocalKafka = shouldProduceToVersionTopic(isLeader, partitionConsumptionState);
       // UPDATE message is only expected in LEADER which must be produced to kafka.
       MessageType msgType = MessageType.valueOf(kafkaValue);
       if (msgType == MessageType.UPDATE && !produceToLocalKafka) {
@@ -2171,6 +2182,10 @@ public class LeaderFollowerStoreIngestionTask extends StoreIngestionTask {
         ControlMessageType controlMessageType = ControlMessageType.valueOf(controlMessage);
         leaderProducedRecordContext = LeaderProducedRecordContext
             .newControlMessageRecord(kafkaClusterId, consumerRecord.getOffset(), kafkaKey.getKey(), controlMessage);
+        LOGGER.info(
+            "lelu: shared-consumer control message: {}, leadership: {}",
+            controlMessage,
+            partitionConsumptionState.getLeaderFollowerState());
         switch (controlMessageType) {
           case START_OF_PUSH:
             /**

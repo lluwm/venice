@@ -86,6 +86,10 @@ public class StoreBufferService extends AbstractStoreBufferService {
       return null;
     }
 
+    public boolean isLeader() {
+      return false;
+    }
+
     public CompletableFuture<Void> getQueuedRecordPersistedFuture() {
       return null;
     }
@@ -207,6 +211,11 @@ public class StoreBufferService extends AbstractStoreBufferService {
     }
 
     @Override
+    public boolean isLeader() {
+      return true;
+    }
+
+    @Override
     public int hashCode() {
       return super.hashCode();
     }
@@ -265,7 +274,8 @@ public class StoreBufferService extends AbstractStoreBufferService {
               leaderProducedRecordContext,
               subPartition,
               node.getKafkaUrl(),
-              node.getBeforeProcessingRecordTimestampNs());
+              node.getBeforeProcessingRecordTimestampNs(),
+              node.isLeader());
 
           /**
            * Complete {@link QueueNode#queuedRecordPersistedFuture} since the processing for the current record is done.
@@ -409,7 +419,8 @@ public class StoreBufferService extends AbstractStoreBufferService {
           leaderProducedRecordContext,
           subPartition,
           kafkaUrl,
-          beforeProcessingRecordTimestampNs);
+          beforeProcessingRecordTimestampNs,
+          true);
     }
   }
 
@@ -420,7 +431,8 @@ public class StoreBufferService extends AbstractStoreBufferService {
         LeaderProducedRecordContext leaderProducedRecordContext,
         int subPartition,
         String kafkaUrl,
-        long beforeProcessingRecordTimestamp) throws InterruptedException;
+        long beforeProcessingRecordTimestamp,
+        boolean isLeader) throws InterruptedException;
   }
 
   private void queueLeaderRecord(
@@ -429,7 +441,8 @@ public class StoreBufferService extends AbstractStoreBufferService {
       LeaderProducedRecordContext leaderProducedRecordContext,
       int subPartition,
       String kafkaUrl,
-      long beforeProcessingRecordTimestamp) throws InterruptedException {
+      long beforeProcessingRecordTimestamp,
+      boolean isLeader) throws InterruptedException {
     getDrainerForConsumerRecord(consumerRecord, subPartition).put(
         new LeaderQueueNode(
             consumerRecord,
@@ -445,13 +458,15 @@ public class StoreBufferService extends AbstractStoreBufferService {
       LeaderProducedRecordContext leaderProducedRecordContext,
       int subPartition,
       String kafkaUrl,
-      long beforeProcessingRecordTimestampNs) {
+      long beforeProcessingRecordTimestampNs,
+      boolean isLeader) {
     ingestionTask.processConsumerRecord(
         consumerRecord,
         leaderProducedRecordContext,
         subPartition,
         kafkaUrl,
-        beforeProcessingRecordTimestampNs);
+        beforeProcessingRecordTimestampNs,
+        isLeader);
 
     // complete the leaderProducedRecordContext future as processing for this leaderProducedRecordContext is done here.
     if (leaderProducedRecordContext != null) {
