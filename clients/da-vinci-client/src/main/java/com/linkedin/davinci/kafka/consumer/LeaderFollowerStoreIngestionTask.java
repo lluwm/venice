@@ -290,6 +290,7 @@ public class LeaderFollowerStoreIngestionTask extends StoreIngestionTask {
         builder.getSchemaRepo(),
         getStoreName(),
         serverConfig.isComputeFastAvroEnabled());
+    LOGGER.info("lelu: newLeaderInactiveTime = {}", newLeaderInactiveTime);
   }
 
   @Override
@@ -1198,7 +1199,7 @@ public class LeaderFollowerStoreIngestionTask extends StoreIngestionTask {
       /**
        * For follower, just keep track of what leader is doing now.
        */
-      partitionConsumptionState.getOffsetRecord().setLeaderTopic(newSourceTopic);
+      // partitionConsumptionState.getOffsetRecord().setLeaderTopic(newSourceTopic);
       partitionConsumptionState.getOffsetRecord()
           .setLeaderUpstreamOffset(OffsetRecord.NON_AA_REPLICATION_UPSTREAM_OFFSET_MAP_KEY, upstreamStartOffset);
       /**
@@ -2171,6 +2172,10 @@ public class LeaderFollowerStoreIngestionTask extends StoreIngestionTask {
         ControlMessageType controlMessageType = ControlMessageType.valueOf(controlMessage);
         leaderProducedRecordContext = LeaderProducedRecordContext
             .newControlMessageRecord(kafkaClusterId, consumerRecord.getOffset(), kafkaKey.getKey(), controlMessage);
+        LOGGER.info(
+            "lelu: shared-consumer control message: {}, leadership: {}",
+            controlMessageType,
+            partitionConsumptionState.getLeaderFollowerState());
         switch (controlMessageType) {
           case START_OF_PUSH:
             /**

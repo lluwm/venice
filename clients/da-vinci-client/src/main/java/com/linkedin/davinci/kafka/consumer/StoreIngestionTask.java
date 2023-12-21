@@ -2600,6 +2600,10 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
           type.name(),
           partition,
           offset);
+      LOGGER.info(
+          "lelu: drainer thread: {}, leadership: {}",
+          type.name(),
+          partitionConsumptionState.getLeaderFollowerState());
     }
     switch (type) {
       case START_OF_PUSH:

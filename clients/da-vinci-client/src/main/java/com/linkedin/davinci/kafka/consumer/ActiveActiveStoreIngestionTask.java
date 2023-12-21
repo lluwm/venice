@@ -1138,7 +1138,7 @@ public class ActiveActiveStoreIngestionTask extends LeaderFollowerStoreIngestion
      */
     syncTopicSwitchToIngestionMetadataService(topicSwitch, partitionConsumptionState, upstreamStartOffsetByKafkaURL);
     if (!isLeader(partitionConsumptionState)) {
-      partitionConsumptionState.getOffsetRecord().setLeaderTopic(newSourceTopic);
+      // partitionConsumptionState.getOffsetRecord().setLeaderTopic(newSourceTopic);
       return true;
     }
     return false;
