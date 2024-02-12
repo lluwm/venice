@@ -52,6 +52,10 @@ class ConsumptionTask implements Runnable {
 
   private volatile boolean running = true;
 
+  private final String kafkaUrl;
+
+  private volatile Map<PubSubTopicPartition, List<PubSubMessage<KafkaKey, KafkaMessageEnvelope, Long>>> latestPolledPubSubMessages;
+
   /**
    * Timestamp of the last poll. Initialized at construction time, in case the consumer task thread gets stuck from
    * the get-go.
@@ -67,6 +71,7 @@ class ConsumptionTask implements Runnable {
       final IntConsumer recordsThrottler,
       final AggKafkaConsumerServiceStats aggStats,
       final ConsumerSubscriptionCleaner cleaner) {
+    this.kafkaUrl = kafkaUrl;
     this.taskId = taskId;
     this.readCycleDelayMs = readCycleDelayMs;
     this.pollFunction = pollFunction;
@@ -74,17 +79,20 @@ class ConsumptionTask implements Runnable {
     this.recordsThrottler = recordsThrottler;
     this.aggStats = aggStats;
     this.cleaner = cleaner;
-    String kafkaUrlForLogger = Utils.getSanitizedStringForLogger(kafkaUrl);
-    this.LOGGER = LogManager.getLogger(getClass().getSimpleName() + "[ " + kafkaUrlForLogger + " - " + taskId + " ]");
+    this.LOGGER = LogManager.getLogger(
+        getClass().getSimpleName() + "[ " + Utils.getSanitizedStringForLogger(this.kafkaUrl) + " - " + taskId + " ]");
   }
 
+  /**
+   * The 'state' of a running shared consumer thread is stored in volatile variables of the ConsumptionTask instance,
+   * so any updates to these variables are stored in memory. When a consumer thread terminates for unknown reason,
+   * it is safe to start a new thread from these stored memory state and continue to finish the work where it was terminated.
+   */
   @Override
   public void run() {
     boolean addSomeDelay = false;
-
     // Pre-allocate some variables to clobber in the loop
     long beforePollingTimeStamp;
-    Map<PubSubTopicPartition, List<PubSubMessage<KafkaKey, KafkaMessageEnvelope, Long>>> polledPubSubMessages;
     long beforeProducingToWriteBufferTimestamp;
     ConsumedDataReceiver<List<PubSubMessage<KafkaKey, KafkaMessageEnvelope, Long>>> consumedDataReceiver;
     Set<PubSubTopicPartition> topicPartitionsToUnsub = new HashSet<>();
@@ -120,14 +128,15 @@ class ConsumptionTask implements Runnable {
            * JavaDoc, about how this class could become the sole entry point for all consumer-related interactions,
            * and thus be capable of operating on a non-threadsafe consumer.
            */
-          polledPubSubMessages = pollFunction.get();
+          latestPolledPubSubMessages =
+              latestPolledPubSubMessages == null ? pollFunction.get() : latestPolledPubSubMessages;
           lastSuccessfulPollTimestamp = System.currentTimeMillis();
           aggStats.recordTotalPollRequestLatency(lastSuccessfulPollTimestamp - beforePollingTimeStamp);
-          if (!polledPubSubMessages.isEmpty()) {
+          if (!latestPolledPubSubMessages.isEmpty()) {
             payloadBytesConsumedInOnePoll = 0;
             polledPubSubMessagesCount = 0;
             beforeProducingToWriteBufferTimestamp = System.currentTimeMillis();
-            for (Map.Entry<PubSubTopicPartition, List<PubSubMessage<KafkaKey, KafkaMessageEnvelope, Long>>> entry: polledPubSubMessages
+            for (Map.Entry<PubSubTopicPartition, List<PubSubMessage<KafkaKey, KafkaMessageEnvelope, Long>>> entry: latestPolledPubSubMessages
                 .entrySet()) {
               PubSubTopicPartition pubSubTopicPartition = entry.getKey();
               String storeName = Version.parseStoreFromKafkaTopicName(pubSubTopicPartition.getTopicName());
@@ -169,6 +178,7 @@ class ConsumptionTask implements Runnable {
             // No result came back, here will add some delay
             addSomeDelay = true;
           }
+          latestPolledPubSubMessages = null;
         } catch (Exception e) {
           if (ExceptionUtils.recursiveClassEquals(e, InterruptedException.class)) {
             // We sometimes wrap InterruptedExceptions, so not taking any chances...
@@ -181,11 +191,14 @@ class ConsumptionTask implements Runnable {
         }
       }
     } catch (Throwable t) {
-      // This is a catch-all to ensure that the thread doesn't die unexpectedly. If it does, we want to know about it.
+      // This is a catch-all to ensure that the thread doesn't terminate silently.
       LOGGER.error(
           "Shared consumer thread: {} exited due to an unexpected exception",
           Thread.currentThread().getName(),
           t);
+
+      // Re-throw the exception to the top level to allow the CustomizedThreadPoolExecutor to resurrect the task.
+      throw t;
     } finally {
       LOGGER.info("Shared consumer thread: {} exited", Thread.currentThread().getName());
     }
@@ -222,6 +235,11 @@ class ConsumptionTask implements Runnable {
     synchronized (this) {
       notifyAll();
     }
+  }
+
+  @Override
+  public String toString() {
+    return "ConsumptionTask{" + "taskId=" + taskId + ", kafkaUrl='" + kafkaUrl + '\'' + '}';
   }
 
   void removeDataReceiver(PubSubTopicPartition topicPartition) {

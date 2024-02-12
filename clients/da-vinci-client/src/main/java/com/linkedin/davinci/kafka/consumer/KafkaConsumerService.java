@@ -24,6 +24,7 @@ import com.linkedin.venice.utils.RedundantExceptionFilter;
 import com.linkedin.venice.utils.Time;
 import com.linkedin.venice.utils.Utils;
 import com.linkedin.venice.utils.VeniceProperties;
+import com.linkedin.venice.utils.concurrent.CustomizedThreadPoolExecutor;
 import com.linkedin.venice.utils.concurrent.VeniceConcurrentHashMap;
 import io.tehuti.metrics.MetricsRepository;
 import java.util.HashMap;
@@ -33,7 +34,7 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.function.IntConsumer;
 import java.util.function.LongSupplier;
@@ -109,8 +110,12 @@ public abstract class KafkaConsumerService extends AbstractKafkaConsumerService 
     this.LOGGER = LogManager.getLogger(KafkaConsumerService.class.getSimpleName() + " [" + kafkaUrlForLogger + "]");
 
     // Initialize consumers and consumerExecutor
-    consumerExecutor = Executors.newFixedThreadPool(
+    consumerExecutor = new CustomizedThreadPoolExecutor(
         numOfConsumersPerKafkaCluster,
+        numOfConsumersPerKafkaCluster,
+        0L,
+        TimeUnit.MILLISECONDS,
+        new LinkedBlockingQueue<Runnable>(),
         new DaemonThreadFactory("venice-shared-consumer-for-" + kafkaUrl));
     this.consumerToConsumptionTask = new IndexedHashMap<>(numOfConsumersPerKafkaCluster);
     this.aggStats = statsOverride != null
@@ -278,8 +283,7 @@ public abstract class KafkaConsumerService extends AbstractKafkaConsumerService 
 
   @Override
   public boolean startInner() {
-    consumerToConsumptionTask.values().forEach(consumerExecutor::submit);
-    consumerExecutor.shutdown();
+    consumerToConsumptionTask.values().forEach(consumerExecutor::execute);
     LOGGER.info("KafkaConsumerService started for {}", kafkaUrl);
     return true;
   }
