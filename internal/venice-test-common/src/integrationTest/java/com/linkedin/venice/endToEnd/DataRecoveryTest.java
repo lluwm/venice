@@ -138,7 +138,7 @@ public class DataRecoveryTest {
 
   @Test(timeOut = TEST_TIMEOUT)
   public void testStartDataRecoveryAPIs() {
-    String storeName = Utils.getUniqueString("dataRecovery-store");
+    String storeName = Utils.getUniqueString("dataRecovery-stor");
     String parentControllerURLs = multiRegionMultiClusterWrapper.getControllerConnectString();
 
     try (ControllerClient parentControllerClient = new ControllerClient(clusterName, parentControllerURLs);
