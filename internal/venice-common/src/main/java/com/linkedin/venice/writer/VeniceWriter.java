@@ -140,7 +140,7 @@ public class VeniceWriter<K, V, U> extends AbstractVeniceWriter<K, V, U> {
   /**
    * Default checksum type. N.B.: Only MD5 (and having no checksums) supports checkpointing mid-checksum.
    */
-  public static final String DEFAULT_CHECK_SUM_TYPE = CheckSumType.MD5.name();
+  public static final String DEFAULT_CHECK_SUM_TYPE = CheckSumType.INCDIGEST.name();
 
   /**
    * Default number of attempts when trying to produce to a Kafka topic and an exception is caught saying
