@@ -902,7 +902,7 @@ public class VeniceServerConfig extends VeniceClusterConfig {
     channelOptionWriteBufferHighBytes = (int) serverProperties
         .getSizeInBytes(SERVER_CHANNEL_OPTION_WRITE_BUFFER_WATERMARK_HIGH_BYTES, WriteBufferWaterMark.DEFAULT.high()); // default
                                                                                                                        // 64KB
-    this.isGlobalRtDivEnabled = serverProperties.getBoolean(SERVER_GLOBAL_RT_DIV_ENABLED, false);
+    this.isGlobalRtDivEnabled = serverProperties.getBoolean(SERVER_GLOBAL_RT_DIV_ENABLED, true);
     if (channelOptionWriteBufferHighBytes <= 0) {
       throw new VeniceException("Invalid channel option write buffer high bytes: " + channelOptionWriteBufferHighBytes);
     }
