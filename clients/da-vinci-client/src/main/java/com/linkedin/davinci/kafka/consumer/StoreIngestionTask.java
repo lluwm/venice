@@ -1075,6 +1075,9 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
             record.getTopicPartition().getPartitionNumber(),
             partitionConsumptionStateMap.get(topicPartition.getPartitionNumber()));
       }
+    } else if (record.getKey().isDivControlMessage()) {
+      // This is a control message from the DIV topic, process it and return early.
+      LOGGER.info("llu: Processing DIV control message");
     }
 
     // This function may modify the original record in KME and it is unsafe to use the payload from KME directly after
