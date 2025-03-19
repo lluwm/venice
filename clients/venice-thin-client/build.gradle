@@ -22,6 +22,7 @@ dependencies {
 
   // Schema related dependencies
   implementation project(':internal:venice-client-common')
+  implementation libraries.opentelemetryApi
 
   testImplementation project(':internal:venice-common')
   testImplementation project(':internal:venice-test-common')

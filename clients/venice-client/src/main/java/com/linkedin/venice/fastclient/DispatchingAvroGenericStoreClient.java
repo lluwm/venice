@@ -193,6 +193,11 @@ public class DispatchingAvroGenericStoreClient<K, V> extends InternalAvroStoreCl
   }
 
   @Override
+  public StoreMetadata getMetadata() {
+    return metadata;
+  }
+
+  @Override
   protected CompletableFuture<V> get(GetRequestContext requestContext, K key) throws VeniceClientException {
     verifyMetadataInitialized();
     requestContext.serverClusterName = metadata.getClusterName();

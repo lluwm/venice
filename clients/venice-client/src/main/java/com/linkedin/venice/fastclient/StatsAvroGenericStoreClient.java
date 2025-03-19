@@ -334,4 +334,42 @@ public class StatsAvroGenericStoreClient<K, V> extends DelegatingAvroStoreClient
       inner.onCompletion(exception);
     }
   }
+
+  /**
+   * Register OTel metrics for the client stats.
+   * This is called when the client is started and StoreMetadata is available.
+   * See {@link DispatchingAvroGenericStoreClient#start}
+   * It is needed to register the metrics with the correct cluster name.
+   */
+  @Override
+  public void start() throws VeniceClientException {
+    /**
+     * Calls super.start() to initialize the delegate client and set up necessary resources.
+     * This includes preparing any internal state required for the client to function correctly.
+     *
+     * See {@link DispatchingAvroGenericStoreClient#start} where it waits the store metadata to be available
+     * before proceeding with the registration of metrics. This ensures that the metrics are accurately associated
+     * with the correct store and cluster context.
+     */
+    super.start();
+
+    // Additionally, it ensures that any metrics or monitoring systems are ready to track the client's performance and
+    // health.
+    if (clientStatsForSingleGet != null) {
+      clientStatsForSingleGet
+          .registerOTelMetrics(getMetadata().getClusterName(), getMetadata().getStoreName(), RequestType.SINGLE_GET);
+    }
+    if (clientStatsForStreamingBatchGet != null) {
+      clientStatsForStreamingBatchGet.registerOTelMetrics(
+          getMetadata().getClusterName(),
+          getMetadata().getStoreName(),
+          RequestType.MULTI_GET_STREAMING);
+    }
+    if (clientStatsForStreamingCompute != null) {
+      clientStatsForStreamingCompute.registerOTelMetrics(
+          getMetadata().getClusterName(),
+          getMetadata().getStoreName(),
+          RequestType.COMPUTE_STREAMING);
+    }
+  }
 }
