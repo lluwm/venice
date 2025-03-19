@@ -16,6 +16,7 @@ import com.linkedin.venice.client.store.streaming.StreamingCallback;
 import com.linkedin.venice.client.store.streaming.StreamingResponseTracker;
 import com.linkedin.venice.compute.ComputeRequestWrapper;
 import com.linkedin.venice.fastclient.meta.InstanceHealthMonitor;
+import com.linkedin.venice.fastclient.meta.RequestBasedMetadata;
 import com.linkedin.venice.fastclient.stats.ClusterRouteStats;
 import com.linkedin.venice.fastclient.stats.ClusterStats;
 import com.linkedin.venice.fastclient.stats.FastClientStats;
@@ -36,9 +37,9 @@ import org.apache.avro.Schema;
 public class StatsAvroGenericStoreClient<K, V> extends DelegatingAvroStoreClient<K, V> {
   private static final int TIMEOUT_IN_SECOND = 5;
 
-  private final FastClientStats clientStatsForSingleGet;
-  private final FastClientStats clientStatsForStreamingBatchGet;
-  private final FastClientStats clientStatsForStreamingCompute;
+  private volatile FastClientStats clientStatsForSingleGet;
+  private volatile FastClientStats clientStatsForStreamingBatchGet;
+  private volatile FastClientStats clientStatsForStreamingCompute;
   private final ClusterStats clusterStats;
   private final MetricsRepository metricsRepository;
   private final ClusterRouteStats clusterRouteStats;
@@ -333,5 +334,69 @@ public class StatsAvroGenericStoreClient<K, V> extends DelegatingAvroStoreClient
       }
       inner.onCompletion(exception);
     }
+  }
+
+  /**
+   * Register OTel metrics for the client stats.
+   * This is called when the client is started and StoreMetadata is available.
+   * See {@link DispatchingAvroGenericStoreClient#start}
+   * It is needed to register the metrics with the correct cluster name.
+   */
+  @Override
+  public void start() throws VeniceClientException {
+    /**
+     * Calls super.start() to initialize the delegate client and set up necessary resources.
+     * This includes preparing any internal state required for the client to function correctly.
+     *
+     * See {@link DispatchingAvroGenericStoreClient#start} where it waits the store metadata to be available
+     * before proceeding with the registration of metrics. This ensures that the metrics are accurately associated
+     * with the correct store and cluster context.
+     */
+    super.start();
+
+    // Additionally, it ensures that any metrics or monitoring systems are ready to track the client's performance and
+    // health.
+    if (clientStatsForSingleGet != null) {
+      clientStatsForSingleGet
+          .registerOTelMetrics(getMetadata().getClusterName(), getMetadata().getStoreName(), RequestType.SINGLE_GET);
+    }
+    if (clientStatsForStreamingBatchGet != null) {
+      clientStatsForStreamingBatchGet.registerOTelMetrics(
+          getMetadata().getClusterName(),
+          getMetadata().getStoreName(),
+          RequestType.MULTI_GET_STREAMING);
+    }
+    if (clientStatsForStreamingCompute != null) {
+      clientStatsForStreamingCompute.registerOTelMetrics(
+          getMetadata().getClusterName(),
+          getMetadata().getStoreName(),
+          RequestType.COMPUTE_STREAMING);
+    }
+
+    /**
+     * Register a callback in store meta so that when the cluster name is changed, the callback is invoked
+     * and the metrics are re-registered with the new cluster name.
+     */
+    registerClusterNameChangeCallback();
+  }
+
+  private void registerClusterNameChangeCallback() {
+    if (!(getMetadata() instanceof RequestBasedMetadata)) {
+      return;
+    }
+
+    RequestBasedMetadata metadata = (RequestBasedMetadata) getMetadata();
+    if (metadata.getClusterNameChangeCallback() != null) {
+      return;
+    }
+
+    // Callback will be called in a different thread.
+    metadata.setClusterNameChangeCallback(newClusterName -> {
+      clientStatsForSingleGet.registerOTelMetrics(newClusterName, getMetadata().getStoreName(), RequestType.SINGLE_GET);
+      clientStatsForStreamingBatchGet
+          .registerOTelMetrics(newClusterName, getMetadata().getStoreName(), RequestType.MULTI_GET_STREAMING);
+      clientStatsForStreamingCompute
+          .registerOTelMetrics(newClusterName, getMetadata().getStoreName(), RequestType.COMPUTE_STREAMING);
+    });
   }
 }

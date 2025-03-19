@@ -1,7 +1,20 @@
 package com.linkedin.venice.fastclient.stats;
+;
+import static com.linkedin.venice.fastclient.stats.FastClientMetricEntity.CALL_COUNT;
+import static com.linkedin.venice.stats.dimensions.VeniceMetricsDimensions.VENICE_CLUSTER_NAME;
+import static com.linkedin.venice.stats.dimensions.VeniceMetricsDimensions.VENICE_REQUEST_METHOD;
+import static com.linkedin.venice.stats.dimensions.VeniceMetricsDimensions.VENICE_STORE_NAME;
+import static com.linkedin.venice.stats.dimensions.VeniceResponseStatusCategory.FAIL;
+import static com.linkedin.venice.stats.dimensions.VeniceResponseStatusCategory.SUCCESS;
 
+import com.google.common.collect.ImmutableMap;
 import com.linkedin.venice.read.RequestType;
 import com.linkedin.venice.stats.TehutiUtils;
+import com.linkedin.venice.stats.VeniceMetricsRepository;
+import com.linkedin.venice.stats.VeniceOpenTelemetryMetricsRepository;
+import com.linkedin.venice.stats.dimensions.VeniceMetricsDimensions;
+import com.linkedin.venice.stats.dimensions.VeniceResponseStatusCategory;
+import com.linkedin.venice.stats.metrics.MetricEntityStateOneEnum;
 import io.tehuti.Metric;
 import io.tehuti.metrics.MetricsRepository;
 import io.tehuti.metrics.Sensor;
@@ -11,7 +24,9 @@ import io.tehuti.metrics.stats.Max;
 import io.tehuti.metrics.stats.OccurrenceRate;
 import io.tehuti.metrics.stats.Rate;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -35,6 +50,9 @@ public class FastClientStats extends com.linkedin.venice.client.stats.ClientStat
   private final Sensor fanoutSizeSensor;
   private final Sensor retryFanoutSizeSensor;
   private long cacheTimeStampInMs = 0;
+  private volatile MetricEntityStateOneEnum<VeniceResponseStatusCategory> healthyReqMetric;
+  private volatile MetricEntityStateOneEnum<VeniceResponseStatusCategory> unhealthyReqMetric;
+  private volatile Map<VeniceMetricsDimensions, String> commonDims;
 
   public static FastClientStats getClientStats(
       MetricsRepository metricsRepository,
@@ -159,5 +177,58 @@ public class FastClientStats extends com.linkedin.venice.client.stats.ClientStat
       return (metric != null ? metric.value() : Double.NaN);
     }).collect(Collectors.toList());
     return collect;
+  }
+
+  public void registerOTelMetrics(String cluster, String storeName, RequestType requestType) {
+    VeniceOpenTelemetryMetricsRepository oTelRepo = null;
+    MetricsRepository metricsRepo = getMetricsRepository();
+    if (metricsRepo instanceof VeniceMetricsRepository) {
+      VeniceMetricsRepository veniceMetricsRepo = (VeniceMetricsRepository) metricsRepo;
+      oTelRepo = veniceMetricsRepo.getOpenTelemetryMetricsRepository();
+      boolean emitOTelMetrics = veniceMetricsRepo.getVeniceMetricsConfig().emitOtelMetrics();
+      if (emitOTelMetrics) {
+        // Set up common dimensions once for all metrics.
+        commonDims = ImmutableMap.of(
+            VENICE_STORE_NAME,
+            storeName,
+            VENICE_REQUEST_METHOD,
+            requestType.toString(),
+            VENICE_CLUSTER_NAME,
+            cluster);
+      }
+    }
+
+    healthyReqMetric = MetricEntityStateOneEnum.create(
+        CALL_COUNT.getMetricEntity(),
+        oTelRepo,
+        this::registerSensor,
+        BasicClientTehutiMetricName.HEALTHY_REQUEST,
+        Collections.singletonList(new OccurrenceRate()),
+        commonDims,
+        VeniceResponseStatusCategory.class);
+
+    unhealthyReqMetric = MetricEntityStateOneEnum.create(
+        CALL_COUNT.getMetricEntity(),
+        oTelRepo,
+        this::registerSensor,
+        BasicClientTehutiMetricName.UNHEALTHY_REQUEST,
+        Collections.singletonList(new OccurrenceRate()),
+        commonDims,
+        VeniceResponseStatusCategory.class);
+  }
+
+  public void recordHealthyRequest() {
+    recordRequest();
+    healthyReqMetric.record(1, SUCCESS);
+  }
+
+  public void recordUnhealthyRequest() {
+    recordRequest();
+    unhealthyReqMetric.record(1, FAIL);
+  }
+
+  // For testing only.
+  public Map<VeniceMetricsDimensions, String> getCommonDims() {
+    return commonDims;
   }
 }

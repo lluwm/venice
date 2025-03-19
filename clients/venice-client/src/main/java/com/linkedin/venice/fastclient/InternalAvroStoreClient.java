@@ -8,6 +8,7 @@ import com.linkedin.venice.client.store.streaming.VeniceResponseCompletableFutur
 import com.linkedin.venice.client.store.streaming.VeniceResponseMap;
 import com.linkedin.venice.client.store.streaming.VeniceResponseMapImpl;
 import com.linkedin.venice.compute.ComputeRequestWrapper;
+import com.linkedin.venice.fastclient.meta.StoreMetadata;
 import com.linkedin.venice.utils.concurrent.VeniceConcurrentHashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -26,6 +27,8 @@ import org.apache.avro.generic.GenericRecord;
 
 public abstract class InternalAvroStoreClient<K, V> implements AvroGenericReadComputeStoreClient<K, V> {
   public abstract ClientConfig getClientConfig();
+
+  public abstract StoreMetadata getMetadata();
 
   @Override
   public final boolean isProjectionFieldValidationEnabled() {

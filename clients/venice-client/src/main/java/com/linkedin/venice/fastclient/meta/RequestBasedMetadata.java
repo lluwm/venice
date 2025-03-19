@@ -57,6 +57,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import org.apache.avro.Schema;
 import org.apache.http.HttpStatus;
@@ -115,6 +116,9 @@ public class RequestBasedMetadata extends AbstractStoreMetadata {
   private AtomicReference<String> serverClusterName = new AtomicReference<>();
 
   private Set<String> harClusters;
+
+  // A callback interested in cluster name changes.
+  private volatile Consumer<String> clusterNameChangeCallback;
 
   public RequestBasedMetadata(ClientConfig clientConfig, D2TransportClient d2TransportClient) {
     super(clientConfig);
@@ -219,12 +223,14 @@ public class RequestBasedMetadata extends AbstractStoreMetadata {
     if (isServiceDiscovered) {
       return;
     }
+    boolean isClusterNameChanged;
     synchronized (this) {
       if (isServiceDiscovered) {
         return;
       }
       d2TransportClient.setServiceName(clusterDiscoveryD2ServiceName);
       String serverD2ServiceName = d2ServiceDiscovery.find(d2TransportClient, storeName, true).getServerD2Service();
+      isClusterNameChanged = !serverD2ServiceName.equals(serverClusterName.get());
       d2TransportClient.setServiceName(serverD2ServiceName);
       serverClusterName.set(serverD2ServiceName);
       isServiceDiscovered = true;
@@ -235,6 +241,11 @@ public class RequestBasedMetadata extends AbstractStoreMetadata {
             ClientRoutingStrategyType.HELIX_ASSISTED);
         setRoutingStrategy(ClientRoutingStrategyType.HELIX_ASSISTED);
       }
+    }
+
+    // Notify the callback if the cluster name has changed.
+    if (isClusterNameChanged && clusterNameChangeCallback != null) {
+      clusterNameChangeCallback.accept(serverClusterName.get());
     }
   }
 
@@ -694,5 +705,13 @@ public class RequestBasedMetadata extends AbstractStoreMetadata {
 
   public void setWarmUpInstancesFutures(Map<String, CompletableFuture> warmUpInstancesFutures) {
     this.warmUpInstancesFutures = warmUpInstancesFutures;
+  }
+
+  public void setClusterNameChangeCallback(Consumer<String> callback) {
+    this.clusterNameChangeCallback = callback;
+  }
+
+  public Consumer<String> getClusterNameChangeCallback() {
+    return clusterNameChangeCallback;
   }
 }

@@ -9,6 +9,7 @@ import com.linkedin.venice.client.store.ComputeRequestBuilder;
 import com.linkedin.venice.client.store.streaming.StreamingCallback;
 import com.linkedin.venice.compute.ComputeRequestWrapper;
 import com.linkedin.venice.fastclient.factory.ClientFactory;
+import com.linkedin.venice.fastclient.meta.StoreMetadata;
 import com.linkedin.venice.schema.SchemaReader;
 import java.util.Optional;
 import java.util.Set;
@@ -79,6 +80,11 @@ public class DelegatingAvroStoreClient<K, V> extends InternalAvroStoreClient<K, 
   @Override
   public ClientConfig getClientConfig() {
     return clientConfig;
+  }
+
+  @Override
+  public StoreMetadata getMetadata() {
+    return delegate.getMetadata();
   }
 
   @Override

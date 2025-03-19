@@ -134,10 +134,6 @@ public class DispatchingAvroGenericStoreClient<K, V> extends InternalAvroStoreCl
     this.storeDeserializerCache = new AvroStoreDeserializerCache<>(metadata);
   }
 
-  protected StoreMetadata getStoreMetadata() {
-    return metadata;
-  }
-
   private String composeURIForSingleGet(GetRequestContext requestContext, K key) {
     int currentVersion = getCurrentVersion();
     String resourceName = getResourceName(currentVersion);
@@ -190,6 +186,11 @@ public class DispatchingAvroGenericStoreClient<K, V> extends InternalAvroStoreCl
   @Override
   public ClientConfig getClientConfig() {
     return config;
+  }
+
+  @Override
+  public StoreMetadata getMetadata() {
+    return metadata;
   }
 
   @Override

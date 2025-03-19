@@ -628,6 +628,7 @@ public class RetriableAvroGenericStoreClientTest {
         clientConfig,
         timeoutProcessor);
     statsAvroGenericStoreClient = new StatsAvroGenericStoreClient(retriableClient, clientConfig);
+    statsAvroGenericStoreClient.start();
     if (!batchGet) {
       testSingleGetAndValidateMetrics(false, false, false, false, keyNotFound, false);
     } else {
@@ -655,6 +656,7 @@ public class RetriableAvroGenericStoreClientTest {
         clientConfig,
         timeoutProcessor);
     statsAvroGenericStoreClient = new StatsAvroGenericStoreClient(retriableClient, clientConfig);
+    statsAvroGenericStoreClient.start();
     if (requestType.equals(RequestType.SINGLE_GET)) {
       testSingleGetAndValidateMetrics(false, false, true, false, false, false);
     } else if (requestType.equals(RequestType.MULTI_GET_STREAMING)) {
@@ -690,6 +692,7 @@ public class RetriableAvroGenericStoreClientTest {
         clientConfig,
         timeoutProcessor);
     statsAvroGenericStoreClient = new StatsAvroGenericStoreClient(retriableClient, clientConfig);
+    statsAvroGenericStoreClient.start();
     if (requestType.equals(RequestType.SINGLE_GET)) {
       testSingleGetAndValidateMetrics(false, false, true, true, keyNotFound, noReplicaFound);
     } else if (requestType.equals(RequestType.MULTI_GET_STREAMING)) {
@@ -716,6 +719,7 @@ public class RetriableAvroGenericStoreClientTest {
         clientConfig,
         timeoutProcessor);
     statsAvroGenericStoreClient = new StatsAvroGenericStoreClient(retriableClient, clientConfig);
+    statsAvroGenericStoreClient.start();
     if (requestType.equals(RequestType.SINGLE_GET)) {
       testSingleGetAndValidateMetrics(false, true, false, true, false, false);
     } else if (requestType.equals(RequestType.MULTI_GET_STREAMING)) {
@@ -742,6 +746,7 @@ public class RetriableAvroGenericStoreClientTest {
         clientConfig,
         timeoutProcessor);
     statsAvroGenericStoreClient = new StatsAvroGenericStoreClient(retriableClient, clientConfig);
+    statsAvroGenericStoreClient.start();
     if (requestType.equals(RequestType.SINGLE_GET)) {
       testSingleGetAndValidateMetrics(false, false, true, false, false, false);
     } else if (requestType.equals(RequestType.MULTI_GET_STREAMING)) {
@@ -768,6 +773,7 @@ public class RetriableAvroGenericStoreClientTest {
         clientConfig,
         timeoutProcessor);
     statsAvroGenericStoreClient = new StatsAvroGenericStoreClient(retriableClient, clientConfig);
+    statsAvroGenericStoreClient.start();
     /**
      *  When the request is closed exceptionally (when both original request and the retry throws exception),
      *  only unhealthy counters gets incremented, so not checking for retry related metrics being true,
@@ -800,6 +806,7 @@ public class RetriableAvroGenericStoreClientTest {
         clientConfig,
         timeoutProcessor);
     statsAvroGenericStoreClient = new StatsAvroGenericStoreClient(retriableClient, clientConfig);
+    statsAvroGenericStoreClient.start();
     /**
      *  When the request is closed exceptionally (when both original request and the retry throws exception),
      *  only unhealthy counters gets incremented, so not checking for retry related metrics being true,

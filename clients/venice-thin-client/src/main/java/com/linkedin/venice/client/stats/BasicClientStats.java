@@ -4,6 +4,7 @@ import com.linkedin.venice.client.store.ClientConfig;
 import com.linkedin.venice.read.RequestType;
 import com.linkedin.venice.stats.AbstractVeniceHttpStats;
 import com.linkedin.venice.stats.TehutiUtils;
+import com.linkedin.venice.stats.metrics.TehutiMetricNameEnum;
 import io.tehuti.metrics.MetricsRepository;
 import io.tehuti.metrics.Sensor;
 import io.tehuti.metrics.stats.Avg;
@@ -62,7 +63,7 @@ public class BasicClientStats extends AbstractVeniceHttpStats {
         new TehutiUtils.SimpleRatioStat(successRequestKeyCountRate, requestKeyCountRate, "success_request_key_ratio"));
   }
 
-  private void recordRequest() {
+  protected void recordRequest() {
     requestSensor.record();
   }
 
@@ -94,5 +95,23 @@ public class BasicClientStats extends AbstractVeniceHttpStats {
 
   protected final Rate getSuccessRequestKeyCountRate() {
     return successRequestKeyCountRate;
+  }
+
+  /**
+   * Metric names for tehuti metrics used in this class.
+   */
+  public enum BasicClientTehutiMetricName implements TehutiMetricNameEnum {
+    HEALTHY_REQUEST, UNHEALTHY_REQUEST;
+
+    private final String metricName;
+
+    BasicClientTehutiMetricName() {
+      this.metricName = name().toLowerCase();
+    }
+
+    @Override
+    public String getMetricName() {
+      return this.metricName;
+    }
   }
 }

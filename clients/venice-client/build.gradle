@@ -26,6 +26,7 @@ dependencies {
   implementation libraries.fastUtil
   implementation libraries.restliCommon
   implementation libraries.r2
+  implementation libraries.opentelemetryApi
 
   testImplementation project(':internal:venice-client-common')
   testImplementation project(':internal:venice-client-common').sourceSets.test.output
