@@ -3365,10 +3365,11 @@ public class LeaderFollowerStoreIngestionTask extends StoreIngestionTask {
       String brokerUrl,
       long beforeProcessingRecordTimestampNs,
       LeaderMetadataWrapper leaderMetadataWrapper,
-      LeaderProducedRecordContext leaderProducedRecordContext) {
+      LeaderProducedRecordContext context) {
     final byte[] keyBytes = getGlobalRtDivKeyBytes(brokerUrl);
     final PubSubTopicPartition topicPartition = previousMessage.getTopicPartition();
     TopicType realTimeTopicType = TopicType.of(REALTIME_TOPIC_TYPE, brokerUrl);
+    LOGGER.warn("ASDF sendGlobalRtDivMessage()");
 
     // Snapshot the RT DIV (single broker URL) in preparation to be produced
     PartitionTracker vtDiv = consumerDiv.cloneVtProducerStates(partition); // includes latest consumed vt offset (LCVO)
@@ -3385,7 +3386,7 @@ public class LeaderFollowerStoreIngestionTask extends StoreIngestionTask {
         partition,
         brokerUrl,
         beforeProcessingRecordTimestampNs,
-        leaderProducedRecordContext,
+        context,
         keyBytes,
         valueBytes,
         topicPartition,
