@@ -3397,7 +3397,8 @@ public class LeaderFollowerStoreIngestionTask extends StoreIngestionTask {
     // Get the old value manifest which contains the list of old chunks, so they can be deleted
     final int schemaId = AvroProtocolDefinition.GLOBAL_RT_DIV_STATE.getCurrentProtocolVersion();
     ChunkedValueManifestContainer valueManifestContainer = new ChunkedValueManifestContainer();
-    readGlobalRtDivState(keyBytes, schemaId, topicPartition, valueManifestContainer);
+    Optional<GlobalRtDivState> state = readGlobalRtDivState(keyBytes, schemaId, topicPartition, valueManifestContainer);
+    // LOGGER.warn("asdf brokerUrl={} manifestIsNull={}", brokerUrl, valueManifestContainer.getManifest() == null);
 
     // Produce to local VT for the Global RT DIV + latest RT offset (GlobalRtDivState)
     // Internally, VeniceWriter.put() will schedule DELETEs for the old chunks in the old manifest after the new PUTs
@@ -3414,6 +3415,7 @@ public class LeaderFollowerStoreIngestionTask extends StoreIngestionTask {
             valueManifestContainer.getManifest(),
             null,
             false);
+    // LOGGER.warn("asdf consumer brokerUrl {} KEY BYTES {}", brokerUrl, keyBytes);
 
     consumedBytesSinceLastSync.put(brokerUrl, 0L); // reset the timer for the next sync, since RT DIV was just synced
   }
@@ -3497,8 +3499,9 @@ public class LeaderFollowerStoreIngestionTask extends StoreIngestionTask {
       int readerValueSchemaID,
       PubSubTopicPartition topicPartition,
       ChunkedValueManifestContainer manifestContainer) {
+    ByteBuffer value = null;
     try {
-      ByteBuffer currValue = (ByteBuffer) GenericChunkingAdapter.INSTANCE.get(
+      value = (ByteBuffer) GenericChunkingAdapter.INSTANCE.get(
           storageEngine,
           topicPartition.getPartitionNumber(),
           ByteBuffer.wrap(keyBytes),
@@ -3510,14 +3513,20 @@ public class LeaderFollowerStoreIngestionTask extends StoreIngestionTask {
           RawBytesStoreDeserializerCache.getInstance(),
           compressor.get(),
           manifestContainer);
-      if (currValue != null) {
-        return Optional.of(
-            globalRtDivStateSerializer.deserialize(
-                ByteUtils.extractByteArray(currValue),
-                AvroProtocolDefinition.GLOBAL_RT_DIV_STATE.getCurrentProtocolVersion()));
-      }
     } catch (Exception e) {
       LOGGER.error("Unable to retrieve stored value bytes", e);
+    }
+    return (value != null) ? deserializeGlobalRtDivState(value) : Optional.empty();
+  }
+
+  Optional<GlobalRtDivState> deserializeGlobalRtDivState(ByteBuffer valueBytes) {
+    try {
+      return Optional.of(
+          globalRtDivStateSerializer.deserialize(
+              ByteUtils.extractByteArray(valueBytes),
+              AvroProtocolDefinition.GLOBAL_RT_DIV_STATE.getCurrentProtocolVersion()));
+    } catch (Exception e) {
+      LOGGER.error("Unable to deserialize stored value bytes", e);
     }
     return Optional.empty();
   }
