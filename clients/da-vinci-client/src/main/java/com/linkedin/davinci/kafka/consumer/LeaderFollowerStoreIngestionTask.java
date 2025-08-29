@@ -3648,7 +3648,8 @@ public class LeaderFollowerStoreIngestionTask extends StoreIngestionTask {
     PartitionTracker.TopicType realTimeTopicType = PartitionTracker.TopicType.of(REALTIME_TOPIC_TYPE, brokerUrl);
     consumerDiv.setPartitionState(realTimeTopicType, pcs.getPartition(), producerStates);
     ByteBuffer checkpointBytes = globalRtDivState.get().getLatestPubSubPosition(); // LCRP
-    final PubSubPosition divRtCheckpointPosition = getPubSubContext().getPubSubPositionDeserializer().toPosition(bytes);
+    final PubSubPosition divRtCheckpointPosition =
+        getPubSubContext().getPubSubPositionDeserializer().toPosition(checkpointBytes);
     pcs.setDivRtCheckpointPosition(brokerUrl, divRtCheckpointPosition);
   }
 

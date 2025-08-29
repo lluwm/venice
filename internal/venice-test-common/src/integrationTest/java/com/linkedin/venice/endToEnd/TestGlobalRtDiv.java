@@ -1,13 +1,6 @@
 package com.linkedin.venice.endToEnd;
 
-import static com.linkedin.venice.ConfigKeys.DEFAULT_MAX_NUMBER_OF_PARTITIONS;
-import static com.linkedin.venice.ConfigKeys.KAFKA_BOOTSTRAP_SERVERS;
-import static com.linkedin.venice.ConfigKeys.PERSISTENCE_TYPE;
-import static com.linkedin.venice.ConfigKeys.SERVER_CONSUMER_POOL_SIZE_PER_KAFKA_CLUSTER;
-import static com.linkedin.venice.ConfigKeys.SERVER_DATABASE_SYNC_BYTES_INTERNAL_FOR_TRANSACTIONAL_MODE;
-import static com.linkedin.venice.ConfigKeys.SERVER_PROMOTION_TO_LEADER_REPLICA_DELAY_SECONDS;
-import static com.linkedin.venice.ConfigKeys.SERVER_SHARED_CONSUMER_ASSIGNMENT_STRATEGY;
-import static com.linkedin.venice.ConfigKeys.SSL_TO_KAFKA_LEGACY;
+import static com.linkedin.venice.ConfigKeys.*;
 import static com.linkedin.venice.integration.utils.VeniceClusterWrapper.DEFAULT_KEY_SCHEMA;
 import static com.linkedin.venice.integration.utils.VeniceClusterWrapper.DEFAULT_VALUE_SCHEMA;
 import static com.linkedin.venice.utils.IntegrationTestPushUtils.*;
@@ -81,6 +74,7 @@ public class TestGlobalRtDiv {
 
   @BeforeClass
   public void setUp() {
+    int numberOfServers = 3;
     Properties extraProperties = new Properties();
     extraProperties.setProperty(PERSISTENCE_TYPE, PersistenceType.ROCKS_DB.name());
     extraProperties.setProperty(SERVER_PROMOTION_TO_LEADER_REPLICA_DELAY_SECONDS, Long.toString(1L));
@@ -92,7 +86,7 @@ public class TestGlobalRtDiv {
         new VeniceClusterCreateOptions.Builder().numberOfControllers(1)
             .numberOfServers(0)
             .numberOfRouters(0)
-            .replicationFactor(2)
+            .replicationFactor(numberOfServers) // set RF to number of servers so that all servers have all partitions
             .partitionSize(1000000)
             .sslToStorageNodes(false)
             .sslToKafka(false)
@@ -114,9 +108,9 @@ public class TestGlobalRtDiv {
     // Enable global div feature in the integration test.
     // extraProperties.setProperty(SERVER_GLOBAL_RT_DIV_ENABLED, "true");
 
-    sharedVenice.addVeniceServer(serverPropertiesWithSharedConsumer, extraProperties);
-    sharedVenice.addVeniceServer(serverPropertiesWithSharedConsumer, extraProperties);
-    // sharedVenice.addVeniceServer(serverPropertiesWithSharedConsumer, extraProperties);
+    for (int i = 0; i < numberOfServers; i++) {
+      sharedVenice.addVeniceServer(serverPropertiesWithSharedConsumer, extraProperties);
+    }
     LOGGER.info("Finished creating VeniceClusterWrapper");
   }
 
@@ -245,14 +239,14 @@ public class TestGlobalRtDiv {
         }
       });
 
-      // /**
-      // * Restart leader SN (server1) to trigger leadership handover during batch consumption.
-      // * When server1 stops, server2 will be promoted to leader. When server1 starts, due to full-auto rebalance,
-      // server2:
-      // * 1) Will be demoted to follower. Leader->standby transition during remote consumption will be tested.
-      // * 2) Or remain as leader. In this case, Leader->standby transition during remote consumption won't be tested.
-      // * TODO: Use semi-auto rebalance and assign a server as the leader to make sure leader->standby always happen.
-      // */
+      /**
+      * Restart leader SN (server1) to trigger leadership handover during batch consumption.
+      * When server1 stops, server2 will be promoted to leader. When server1 starts, due to full-auto rebalance,
+      server2:
+      * 1) Will be demoted to follower. Leader->standby transition during remote consumption will be tested.
+      * 2) Or remain as leader. In this case, Leader->standby transition during remote consumption won't be tested.
+      * TODO: Use semi-auto rebalance and assign a server as the leader to make sure leader->standby always happen.
+      */
       HelixExternalViewRepository routingDataRepo = sharedVenice.getLeaderVeniceController()
           .getVeniceHelixAdmin()
           .getHelixVeniceClusterResources(sharedVenice.getClusterName())
@@ -262,6 +256,7 @@ public class TestGlobalRtDiv {
       Assert.assertNotNull(leaderNode);
 
       List<VeniceServerWrapper> servers = sharedVenice.getVeniceServers();
+
       servers.forEach(server -> {
         TestVeniceServer testVeniceServer = server.getVeniceServer();
         StoreIngestionTask sit = testVeniceServer.getKafkaStoreIngestionService().getStoreIngestionTask(resourceName);
@@ -305,7 +300,8 @@ public class TestGlobalRtDiv {
         GlobalRtDivState globalRtDiv = globalRtDivStateSerializer.deserialize(
             ByteUtils.extractByteArray(value),
             AvroProtocolDefinition.GLOBAL_RT_DIV_STATE.getCurrentProtocolVersion());
-        Assert.assertNotNull(globalRtDiv);
+        LOGGER.info("Global RT div state: {}", globalRtDiv);
+        validateGlobalDivState(globalRtDiv);
       });
 
       // TODO: shutdown hosts and restart them to verify that the global RT div state gets loaded correctly
@@ -319,5 +315,30 @@ public class TestGlobalRtDiv {
       // Object value = client.get(key).get();
       // assertNull(value, "Key " + key + " should be missing!");
     }
+  }
+
+  void validateGlobalDivState(GlobalRtDivState state) {
+    Assert.assertNotNull(state);
+    Assert.assertNotNull(state.getSrcUrl());
+    Assert.assertNotNull(state.getProducerStates());
+    Assert.assertFalse(state.getProducerStates().isEmpty());
+    state.getProducerStates().forEach((producerId, producerState) -> {
+      Assert.assertNotNull(producerId);
+      Assert.assertNotNull(producerState);
+      // Segment number should be non-negative
+      Assert.assertTrue(producerState.getSegmentNumber() >= 0);
+      // Message sequence number should be non-negative
+      Assert.assertTrue(producerState.getMessageSequenceNumber() >= 0);
+      // Message timestamp should be non-negative
+      Assert.assertTrue(producerState.getMessageTimestamp() >= 0);
+      // Checksum type should be valid
+      Assert.assertTrue(producerState.getChecksumType() >= 0 && producerState.getChecksumType() <= 3);
+      // Checksum state should not be null
+      Assert.assertNotNull(producerState.getChecksumState());
+      // Aggregates should not be null
+      Assert.assertNotNull(producerState.getAggregates());
+      // Debug info should not be null
+      Assert.assertNotNull(producerState.getDebugInfo());
+    });
   }
 }
